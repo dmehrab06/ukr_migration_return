@@ -1,0 +1,160 @@
+for raion_name in ALL_RAION_BINS:
+    try:
+        # if os.path.isfile(OUTPUT_DIR+RETURN_DIR_NAME+f'mim_hid_return_{raion_name}_SIM_{sim_idx}_SEED_{SEED}.pq'):
+        #     print('already simulated for',raion_name,sim_idx,flush=True)
+        #     continue
+        # else:
+        #     print('file does not exist',OUTPUT_DIR+RETURN_DIR_NAME+f'mim_hid_return_{raion_name}_SIM_{sim_idx}_SEED_{SEED}.pq','... will simulate now..')
+        returned_refugees = []
+        st_time = time.time()
+
+        if os.path.isfile(HOUSEHOLD_DIR+'KSW_HH_BALL_AAMAS_'+raion_name+NETWORK_TYPE_fast):
+            print('KSW neighborhood loaded')
+            neighbor_household_data = pd.read_parquet(HOUSEHOLD_DIR+'KSW_HH_BALL_AAMAS_'+raion_name+NETWORK_TYPE_fast)
+        elif os.path.isfile(HOUSEHOLD_DIR+'KSW_HH_BALL_AAMAS_'+raion_name+NETWORK_TYPE):
+            print('KSW neighborhood loaded')
+            neighbor_household_data = pd.read_csv(HOUSEHOLD_DIR+'KSW_HH_BALL_AAMAS_'+raion_name+NETWORK_TYPE)
+            neighbor_household_data.to_parquet(HOUSEHOLD_DIR+'KSW_HH_BALL_AAMAS_'+raion_name+NETWORK_TYPE_fast,index=False)
+        else:
+            print('s2 neighborhood loaded')
+            neighbor_household_data = pd.read_csv(HOUSEHOLD_DIR+NEIGHBOR_DATA_PREFIX+raion_name+'_13_s2.csv',usecols=['hid_x','hid_y'])
+
+        df_refugee = get_refugee_file(raion_name,sim_idx)
+        df_refugee = assign_destination(df_refugee,raion_to_dest_df,raion_name)
+        df_refugee['origin'] = raion_name
+
+        START_DATE = '2022-02-24'
+        END_DATE = '2022-09-01'
+        T_CURRENT = pd.to_datetime(START_DATE)
+        T_FINAL = pd.to_datetime(END_DATE)
+        NO_RETURN_DATE = pd.to_datetime('2025-01-01')
+
+        if 'global_conflict' not in function_type:
+            impact_data = total_impact_data[total_impact_data.matching_place_id==raion_name]
+        else:
+            print('looking at whole UKR')
+            impact_data = total_impact_data
+
+        impact_data['time'] = pd.to_datetime(impact_data['time'])
+        if 'intensity' not in function_type:
+            print('working based on count')
+            conflict_context = impact_data.groupby('time')['event_id'].count().reset_index()
+            conflict_context = conflict_context.rename(columns={'event_id':'conflict'})
+        else:
+            print('working based on intensity')
+            conflict_context = impact_data.groupby('time')['event_intensity'].sum().reset_index()
+            conflict_context = conflict_context.rename(columns={'event_intensity':'conflict'})
+
+        conflict_context['conflict'] = conflict_context['conflict'].rolling(14).mean()
+        conflict_context = conflict_context.dropna(subset='conflict')
+        NORM_CONSTANT = conflict_context['conflict'].max()
+        conflict_context['conflict'] = conflict_context['conflict']/NORM_CONSTANT
+        
+        print(df_refugee.columns.tolist())
+        df_refugee['h_size'] = df_refugee[DEMO_TYPES].sum(axis=1)
+        df_refugee['single_male'] = df_refugee.apply(lambda x: (1 if (x['ADULT_MALE']==1 and x['h_size']==1) else 0),axis=1)
+        print(df_refugee[df_refugee.single_male==1].shape[0],'is single male hh out of',df_refugee.shape[0])
+        df_refugee['move_date'] = pd.to_datetime(df_refugee['move_date'])
+        df_refugee['return_date'] = pd.to_datetime('2025-01-01')
+        df_refugee['demo_move_prob'] = df_refugee.apply(lambda x: get_return_prob_demographic(x[DEMO_TYPES].tolist(),FAMILY_PROB,MOVE_PROB),axis=1)
+        df_refugee['survival_prob'] = 1.0
+
+        hid_nsize = (neighbor_household_data.groupby('hid_x')['hid_y'].count().reset_index()).rename(columns={'hid_x':'hid','hid_y':'n_size'})
+        refugee_nsizes_total = hid_nsize.merge(df_refugee[['hid']],on='hid',how='inner')
+        refugee_neighborhood_only = neighbor_household_data.merge(df_refugee[['hid']],left_on='hid_x',right_on='hid',how='inner')
+        refugee_neighborhood_only = refugee_neighborhood_only.drop(columns=['hid'])
+        refugee_neighborhood_only = refugee_neighborhood_only.merge(df_refugee[['hid']],left_on='hid_y',right_on='hid',how='inner')
+        refugee_neighborhood_only = refugee_neighborhood_only.drop(columns=['hid'])
+        refugee_nsizes_outside = (refugee_neighborhood_only.groupby('hid_x')['hid_y'].count().reset_index()).rename(columns={'hid_x':'hid','hid_y':'n_size_migrant'})
+        neighbor_effect_df = refugee_nsizes_outside.merge(refugee_nsizes_total,on='hid',how='inner')
+        neighbor_effect_df['peer_return_fraction'] = (neighbor_effect_df['n_size']-neighbor_effect_df['n_size_migrant'])/neighbor_effect_df['n_size']
+
+        print('simulation starting...')
+        prev_impact_count = 0
+        for i in range(0,300):
+            #print(T_CURRENT)
+            if T_CURRENT > T_FINAL:
+                break
+            sim_start = time.time()
+
+            if 'lagged' not in function_type:
+                print('taking current')
+                cur_conflict_context = conflict_context[conflict_context.time==T_CURRENT]
+            else:
+                print('taking lag of',LAG)
+                cur_conflict_context = conflict_context[conflict_context.time==(T_CURRENT-pd.DateOffset(days=LAG))]
+
+            cur_impact_count = 0 if cur_conflict_context.shape[0]==0 else max(cur_conflict_context['conflict'])
+            print('at',T_CURRENT,'conflict context is',cur_impact_count)
+            #tot_count = impact_data.shape[0]
+            normalized_impact_count = cur_impact_count
+            discounted_impact_count = min(1.0,prev_impact_count*V_R + normalized_impact_count)
+
+            ret_module_start = time.time()
+            #approach 1: takes 80 seconds
+            #df_refugee['return_prob'] = df_refugee.apply(lambda x: get_return_prob(x['hid'],T_CURRENT,x['move_date'],normalized_impact_count,x[DEMO_TYPES].tolist()),axis=1)
+
+            #approach 2: takes -- seconds
+            df_refugee['days_passed'] = (T_CURRENT-df_refugee['move_date']).dt.days
+            #df_refugee['sigmoid_days_passed'] = 1.0/(1+Q_R*np.exp(-V_R*(df_refugee['days_passed']-1)))
+            #df_refugee['valid_day'] = df_refugee['days_passed'].apply(lambda x: 1 if x>=1 else 0)
+            #df_refugee['time_weight'] = df_refugee['valid_day']*df_refugee['sigmoid_days_passed']
+            df_refugee = df_refugee.merge(neighbor_effect_df[['hid','peer_return_fraction']],on='hid',how='inner')
+
+            if 'split' not in function_type:
+                df_refugee['hazard'] = df_refugee.apply(lambda x: calc_hazard(Q_R,V_R,normalized_impact_count,discounted_impact_count,
+                                                                              x['days_passed'],function_type=function_type,lmbdapeer=PEER_Q_R,
+                                                                              peer_gone=x['peer_return_fraction'],peer_thresh=PEER_T), axis = 1)
+            else:
+                print('assigning a different haz rate of',V_R,'to single male houses')
+                df_refugee['hazard'] = df_refugee.apply(lambda x: calc_hazard(Q_R,V_R,normalized_impact_count,discounted_impact_count,x['days_passed'],
+                                                                              function_type=function_type,single_male=x['single_male'],lmbda2=V_R,lmbdapeer=PEER_Q_R,
+                                                                              peer_gone=x['peer_return_fraction'],peer_thresh=PEER_T), axis = 1)
+            #df_refugee['hazard'] = df_refugee['hazard'].apply(lambda x: 0.00001 if x<0.00001 else (0.99999 if x>0.99999 else x))
+            df_refugee['survival_prob'] = df_refugee['survival_prob']*(1.0-df_refugee['hazard'])
+            df_refugee['return_prob'] = 1-df_refugee['survival_prob']
+            #df_refugee['return_prob'] = SCALE_WEIGHT*df_refugee['time_weight']*(1-normalized_impact_count)*df_refugee['demo_move_prob']*df_refugee['peer_return_fraction']
+            #df_refugee['return_prob'] = SCALE_WEIGHT*df_refugee['time_weight']*(1-normalized_impact_count)*df_refugee['demo_move_prob']
+            #df_refugee = df_refugee.drop(columns=['days_passed','sigmoid_days_passed','valid_day','time_weight'])
+            df_refugee = df_refugee.drop(columns=['days_passed'])
+
+            ret_module_end = time.time()
+            #print(T_CURRENT,'return module calculated in',ret_module_end-ret_module_start,'seconds with pop size',df_refugee.shape[0])
+
+            coin_toss_start = time.time()
+            df_refugee['coin_toss'] = np.random.random(df_refugee.shape[0])
+            #print(T_CURRENT,'coin toss done in',time.time()-coin_toss_start,'seconds with pop size',df_refugee.shape[0])
+
+            coin_sample_start = time.time()
+            df_refugee['return'] = df_refugee.apply(lambda x: get_coin_side(x['return_prob'],x['coin_toss']),axis=1)
+            #print(T_CURRENT,'coin side sampled in',time.time()-coin_sample_start,'seconds with pop size',df_refugee.shape[0])
+
+            date_assigned_start = time.time()
+            df_refugee['return_date'] = df_refugee['return'].apply(lambda x: T_CURRENT if x==1 else NO_RETURN_DATE)
+            #print(T_CURRENT,'return date assigned in',time.time()-date_assigned_start,'seconds with pop size',df_refugee.shape[0])
+
+            split_start = time.time()
+            returned_refugees.append(df_refugee[df_refugee['return']==1])
+            print(T_CURRENT,df_refugee[df_refugee['return']==1].shape[0],'refugee returned','time taken:',time.time()-sim_start,flush=True)
+            df_refugee = df_refugee[df_refugee['return']==0]
+            #print(T_CURRENT,'dataset split in',time.time()-split_start,'seconds with remaining pop size',df_refugee.shape[0])
+            #print(df_refugee[['hid','return_prob']])
+
+            refugee_neighborhood_only = refugee_neighborhood_only.merge(df_refugee[['hid']],left_on='hid_x',right_on='hid',how='inner')
+            refugee_neighborhood_only = refugee_neighborhood_only.drop(columns=['hid'])
+            refugee_neighborhood_only = refugee_neighborhood_only.merge(df_refugee[['hid']],left_on='hid_y',right_on='hid',how='inner')
+            refugee_neighborhood_only = refugee_neighborhood_only.drop(columns=['hid'])
+            refugee_nsizes_outside = (refugee_neighborhood_only.groupby('hid_x')['hid_y'].count().reset_index()).rename(columns={'hid_x':'hid','hid_y':'n_size_migrant'})
+            neighbor_effect_df = neighbor_effect_df.drop(columns=['n_size_migrant'])
+            neighbor_effect_df = refugee_nsizes_outside.merge(neighbor_effect_df,on='hid',how='inner')
+            neighbor_effect_df['peer_return_fraction'] = (neighbor_effect_df['n_size']-neighbor_effect_df['n_size_migrant'])/neighbor_effect_df['n_size']
+            df_refugee =  df_refugee.drop(columns=['peer_return_fraction'])
+
+            T_CURRENT = T_CURRENT + pd.DateOffset(days=1)
+            prev_impact_count = discounted_impact_count
+        print(raion_name,'simulated in',time.time()-st_time,'seconds',flush=True)
+        #pd.concat(returned_refugees).to_csv(OUTPUT_DIR+RETURN_DIR_NAME+f'mim_hid_return_{raion_name}_SIM_{sim_idx}_SEED_{SEED}.csv',index=False)
+        pd.concat(returned_refugees).to_parquet(OUTPUT_DIR+RETURN_DIR_NAME+f'mim_hid_return_{raion_name}_SIM_{sim_idx}_SEED_{SEED}.pq',index=False)
+    except Exception as e:
+        print(e)
+        continue

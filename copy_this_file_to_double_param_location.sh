@@ -1,0 +1,10 @@
+#cp $1 return_model_variations/ConstHazard/
+cp $1 return_model_variations/DiscountedGlobalConflictHazard/
+cp $1 return_model_variations/DiscountedGlobalConflictSplitHazard/
+#cp $1 return_model_variations/GlobalConflictHazard/
+#cp $1 return_model_variations/GlobalConflictLaggedHazard/lag-1-day/
+#cp $1 return_model_variations/GlobalConflictLaggedHazard/lag-14-day/
+#cp $1 return_model_variations/GlobalConflictLaggedHazard/lag-4-day/
+#cp $1 return_model_variations/GlobalConflictLaggedHazard/lag-7-day/
+cp $1 return_model_variations/GlobalConflictSplitHazard/
+#cp $1 return_model_variations/LocalConflictHazard/

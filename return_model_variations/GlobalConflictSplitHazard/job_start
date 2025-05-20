@@ -1,0 +1,1 @@
+sbatch return_pipeline_double_param.sbatch 0.0002 0.0005 0 split_gcf Bayesian_opt2 constant_global_conflict_intensity_split

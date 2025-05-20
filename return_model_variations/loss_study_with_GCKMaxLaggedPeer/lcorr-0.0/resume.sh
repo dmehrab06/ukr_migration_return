@@ -1,0 +1,1 @@
+sbatch return_pipeline_triple_param.sbatch 0.00032147 0.00093055 0.84617861 46 lcorr-0p0 Bayesian_lcorr_opt-0.0 constant_global_conflict_intensity_kmax_rolling_7_lagged_30_peer

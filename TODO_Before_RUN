@@ -1,0 +1,18 @@
+Check abm_dest_return_hazard.py
+    date_range
+    function_implementation
+    parameter_passed_correctly
+    
+Check abm_dest_return_gen.py
+    function and dir name passed correctly
+    
+Check abm_dest_return.sbatch
+    # parameter passed correctly
+    
+Check calibration.py
+    calibration range
+    # of parameters
+
+Check return_pipeline.sh
+    # stopping condition
+    # of arguments read correctly
